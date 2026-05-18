@@ -169,7 +169,13 @@ def demo_fn(args):
         intrinsic[:, :2, :] *= scale
         track_mask = pred_vis_scores > args.vis_thresh
 
-        # TODO: radial distortion, iterative BA, masks
+        if args.camera_type == "SIMPLE_RADIAL":
+            extra_params = np.zeros((len(intrinsic), 1))
+        elif args.camera_type == "RADIAL":
+            extra_params = np.zeros((len(intrinsic), 2))
+        else:
+            extra_params = None
+        
         reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
             points_3d,
             extrinsic,
@@ -181,6 +187,7 @@ def demo_fn(args):
             shared_camera=shared_camera,
             camera_type=args.camera_type,
             points_rgb=points_rgb,
+            extra_params=extra_params,
         )
 
         if reconstruction is None:
