@@ -9,7 +9,7 @@ seed_value: 42
 accum_steps: 1
 patch_size: 14
 val_epoch_freq: 1
-max_img_per_gpu: 2
+max_img_per_gpu: 24
 
 limit_train_batches: 100
 limit_val_batches: 20
@@ -129,7 +129,7 @@ optim:
           _target_: fvcore.common.param_scheduler.ConstantParamScheduler
           value: 0.01
 
-max_epochs: 2
+max_epochs: 3
 
 model:
   _target_: vggt.models.vggt.VGGT
