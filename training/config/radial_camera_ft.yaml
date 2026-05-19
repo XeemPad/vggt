@@ -30,6 +30,8 @@ data:
           split: train
           root_dir: /YOUR/PATH/TO/robustvggt
           len_train: 100000
+          val_fraction: 0.1
+          split_seed: 42
   val:
     _target_: data.dynamic_dataloader.DynamicTorchDataset
     num_workers: ${num_workers}
@@ -42,9 +44,11 @@ data:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
         - _target_: data.datasets.simple_radial_colmap.RobustVGGTK1Dataset
-          split: test
+          split: val
           root_dir: /YOUR/PATH/TO/robustvggt
           len_test: 10000
+          val_fraction: 0.1
+          split_seed: 42
 
 logging:
   log_dir: logs/${exp_name}

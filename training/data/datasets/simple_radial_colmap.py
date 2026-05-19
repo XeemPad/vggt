@@ -326,6 +326,8 @@ class RobustVGGTK1Dataset(BaseDataset):
         split: str = "train",
         len_train: int = 100000,
         len_test: int = 10000,
+        val_fraction: float = 0.1,
+        split_seed: int = 42,
     ):
         super().__init__(common_conf=common_conf)
         self.root_dir = root_dir
@@ -333,10 +335,23 @@ class RobustVGGTK1Dataset(BaseDataset):
         self.inside_random = common_conf.inside_random
         self.allow_duplicate_img = common_conf.allow_duplicate_img
         self.len_train = len_train if split == "train" else len_test
-        self.scenes = _discover_robustvggt_scenes(root_dir)
+        scenes = _discover_robustvggt_scenes(root_dir)
+        if val_fraction > 0 and len(scenes) > 1:
+            rng = np.random.default_rng(split_seed)
+            order = rng.permutation(len(scenes))
+            val_count = max(1, int(round(len(scenes) * val_fraction)))
+            val_indices = set(order[:val_count].tolist())
+            if split == "train":
+                scenes = [scene for idx, scene in enumerate(scenes) if idx not in val_indices]
+            elif split in ("val", "test"):
+                scenes = [scene for idx, scene in enumerate(scenes) if idx in val_indices]
+            else:
+                raise ValueError(f"Unsupported split: {split}")
+
+        self.scenes = scenes
         if not self.scenes:
-            raise ValueError(f"No robustvggt scenes found under {root_dir}")
-        logging.info(f"Loaded {len(self.scenes)} robustvggt scenes from {root_dir}")
+            raise ValueError(f"No robustvggt scenes found for split={split} under {root_dir}")
+        logging.info(f"Loaded {len(self.scenes)} robustvggt scenes from {root_dir} for split={split}")
 
     def get_data(self, seq_index=None, img_per_seq=None, seq_name=None, ids=None, aspect_ratio=1.0):
         if self.inside_random and self.training:
