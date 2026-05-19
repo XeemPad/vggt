@@ -194,13 +194,41 @@ def _camera_params_to_intrinsic_k1(camera):
     return intrinsic, np.array([k1], dtype=np.float32)
 
 
-def _find_image_path(image_roots, image_name):
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp", ".JPG", ".JPEG", ".PNG"}
+
+
+def _build_image_index(search_root):
+    image_index = {}
+    if not osp.isdir(search_root):
+        return image_index
+    for dirpath, _, filenames in os.walk(search_root):
+        for filename in filenames:
+            if osp.splitext(filename)[1] not in IMAGE_EXTENSIONS:
+                continue
+            full_path = osp.join(dirpath, filename)
+            rel_path = osp.relpath(full_path, search_root)
+            image_index.setdefault(filename, full_path)
+            image_index.setdefault(rel_path, full_path)
+            image_index.setdefault(rel_path.replace("\\", "/"), full_path)
+    return image_index
+
+
+def _find_image_path(image_roots, image_name, image_index=None):
     candidates = [osp.join(root, image_name) for root in image_roots]
     candidates += [osp.join(root, osp.basename(image_name)) for root in image_roots]
     for candidate in candidates:
         if osp.exists(candidate):
             return candidate
-    return candidates[0]
+
+    if image_index is not None:
+        basename = osp.basename(image_name)
+        normalized = image_name.replace("\\", "/")
+        if normalized in image_index:
+            return image_index[normalized]
+        if basename in image_index:
+            return image_index[basename]
+
+    raise FileNotFoundError(f"Could not resolve image '{image_name}' in roots: {image_roots}")
 
 
 def _nerf_c2w_to_opencv_w2c(transform_matrix):
@@ -225,15 +253,21 @@ def _load_colmap_scene(sparse_dir, image_roots, scene_name):
     else:
         return None
 
+    image_index = _build_image_index(scene_name)
     frames = []
     for image in images:
         camera = cameras[image["camera_id"]]
         intrinsic, distortion = _camera_params_to_intrinsic_k1(camera)
         R = qvec_to_rotmat(image["qvec"])
         extrinsic = np.concatenate([R, image["tvec"][:, None]], axis=1).astype(np.float32)
+        try:
+            image_path = _find_image_path(image_roots, image["name"], image_index=image_index)
+        except FileNotFoundError as exc:
+            logging.warning(str(exc))
+            continue
         frames.append(
             {
-                "image_path": _find_image_path(image_roots, image["name"]),
+                "image_path": image_path,
                 "extrinsic": extrinsic,
                 "intrinsic": intrinsic,
                 "distortion": distortion,
