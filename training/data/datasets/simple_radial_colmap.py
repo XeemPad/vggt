@@ -314,11 +314,14 @@ def _load_transforms_scene(path):
     return {"name": root_dir, "frames": frames} if frames else None
 
 
-def _discover_robustvggt_scenes(root_dir):
+def _discover_robustvggt_scenes(root_dir, ignored_dir_names=("sparse.tmp",)):
     scenes = []
     seen_sparse_dirs = set()
 
     for dirpath, _, filenames in os.walk(root_dir):
+        if any(part in ignored_dir_names for part in osp.normpath(dirpath).split(os.sep)):
+            continue
+
         filenames = set(filenames)
         if "transforms.json" in filenames:
             scene = _load_transforms_scene(osp.join(dirpath, "transforms.json"))

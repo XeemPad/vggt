@@ -1,5 +1,6 @@
 defaults:
   - default_dataset.yaml
+  - _self_
 
 exp_name: radial_camera_ft
 img_size: 518
@@ -8,7 +9,7 @@ seed_value: 42
 accum_steps: 1
 patch_size: 14
 val_epoch_freq: 1
-max_img_per_gpu: 8
+max_img_per_gpu: 2
 
 limit_train_batches: 100
 limit_val_batches: 20
@@ -23,6 +24,7 @@ data:
       patch_size: ${patch_size}
       debug: False
       repeat_batch: False
+      img_nums: [2, 2]
     dataset:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
@@ -40,6 +42,7 @@ data:
       img_size: ${img_size}
       patch_size: ${patch_size}
       debug: False
+      img_nums: [2, 2]
     dataset:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
