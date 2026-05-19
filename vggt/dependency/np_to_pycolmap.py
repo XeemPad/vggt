@@ -207,6 +207,7 @@ def batch_np_matrix_to_pycolmap_wo_track(
     image_size,
     shared_camera=False,
     camera_type="SIMPLE_PINHOLE",
+    extra_params=None,
 ):
     """
     Convert Batched NumPy Arrays to PyCOLMAP
@@ -239,7 +240,7 @@ def batch_np_matrix_to_pycolmap_wo_track(
     for fidx in range(N):
         # set camera
         if camera is None or (not shared_camera):
-            pycolmap_intri = _build_pycolmap_intri(fidx, intrinsics, camera_type)
+            pycolmap_intri = _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params=extra_params)
 
             camera = pycolmap.Camera(
                 model=camera_type, width=image_size[0], height=image_size[1], params=pycolmap_intri, camera_id=fidx + 1
@@ -314,6 +315,13 @@ def _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params=None):
         focal = (intrinsics[fidx][0, 0] + intrinsics[fidx][1, 1]) / 2
         k = 0.0 if extra_params is None else extra_params[fidx][0]
         pycolmap_intri = np.array([focal, intrinsics[fidx][0, 2], intrinsics[fidx][1, 2], k])
+    elif camera_type == "RADIAL":
+        focal = (intrinsics[fidx][0, 0] + intrinsics[fidx][1, 1]) / 2
+        if extra_params is None:
+            k1, k2 = 0.0, 0.0
+        else:
+            k1, k2 = extra_params[fidx, 0], extra_params[fidx, 1]
+        pycolmap_intri = np.array([focal, intrinsics[fidx][0, 2], intrinsics[fidx][1, 2], k1, k2])
     else:
         raise ValueError(f"Camera type {camera_type} is not supported yet")
 

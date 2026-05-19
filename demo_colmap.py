@@ -139,6 +139,13 @@ def demo_fn(args):
     extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
     points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
 
+    if args.camera_type == "SIMPLE_RADIAL":
+        extra_params = np.zeros((len(intrinsic), 1))
+    elif args.camera_type == "RADIAL":
+        extra_params = np.zeros((len(intrinsic), 2))
+    else:
+        extra_params = None
+
     if args.use_ba:
         image_size = np.array(images.shape[-2:])
         scale = img_load_resolution / vggt_fixed_resolution
@@ -169,13 +176,6 @@ def demo_fn(args):
         intrinsic[:, :2, :] *= scale
         track_mask = pred_vis_scores > args.vis_thresh
 
-        if args.camera_type == "SIMPLE_RADIAL":
-            extra_params = np.zeros((len(intrinsic), 1))
-        elif args.camera_type == "RADIAL":
-            extra_params = np.zeros((len(intrinsic), 2))
-        else:
-            extra_params = None
-        
         reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
             points_3d,
             extrinsic,
@@ -202,7 +202,7 @@ def demo_fn(args):
         conf_thres_value = args.conf_thres_value
         max_points_for_colmap = 100000  # randomly sample 3D points
         shared_camera = False  # in the feedforward manner, we do not support shared camera
-        camera_type = "PINHOLE"  # in the feedforward manner, we only support PINHOLE camera
+        camera_type = args.camera_type
 
         image_size = np.array([vggt_fixed_resolution, vggt_fixed_resolution])
         num_frames, height, width, _ = points_3d.shape
@@ -234,6 +234,7 @@ def demo_fn(args):
             image_size,
             shared_camera=shared_camera,
             camera_type=camera_type,
+            extra_params=extra_params,
         )
 
         reconstruction_resolution = vggt_fixed_resolution
