@@ -87,6 +87,7 @@ def compute_camera_loss(
     weight_trans=1.0,       # weight for translation loss
     weight_rot=1.0,         # weight for rotation loss
     weight_focal=0.5,       # weight for focal length loss
+    weight_k1=1.0,          # weight for SIMPLE_RADIAL k1 loss
     **kwargs
 ):
     # List of predicted pose encodings per stage
@@ -105,11 +106,16 @@ def compute_camera_loss(
 
     # Encode ground truth pose to match predicted encoding format
     gt_pose_encoding = extri_intri_to_pose_encoding(
-        gt_extrinsics, gt_intrinsics, image_hw, pose_encoding_type=pose_encoding_type
+        gt_extrinsics,
+        gt_intrinsics,
+        image_hw,
+        pose_encoding_type=pose_encoding_type,
+        distortions=batch_data.get("distortions", None),
     )
 
-    # Initialize loss accumulators for translation, rotation, focal length
-    total_loss_T = total_loss_R = total_loss_FL = 0
+    # Initialize loss accumulators for translation, rotation, focal length, distortion
+    total_loss_T = total_loss_R = total_loss_FL = total_loss_k1 = 0
+    has_k1 = pose_encoding_type == "absT_quaR_FoV_k1" and "distortions" in batch_data
 
     # Compute loss for each prediction stage with temporal weighting
     for stage_idx in range(n_stages):
@@ -122,28 +128,33 @@ def compute_camera_loss(
             loss_T_stage = (pred_pose_stage * 0).mean()
             loss_R_stage = (pred_pose_stage * 0).mean()
             loss_FL_stage = (pred_pose_stage * 0).mean()
+            loss_k1_stage = (pred_pose_stage * 0).mean()
         else:
             # Only consider valid frames for loss computation
-            loss_T_stage, loss_R_stage, loss_FL_stage = camera_loss_single(
+            loss_T_stage, loss_R_stage, loss_FL_stage, loss_k1_stage = camera_loss_single(
                 pred_pose_stage[valid_frame_mask].clone(),
                 gt_pose_encoding[valid_frame_mask].clone(),
-                loss_type=loss_type
+                loss_type=loss_type,
+                has_k1=has_k1,
             )
         # Accumulate weighted losses across stages
         total_loss_T += loss_T_stage * stage_weight
         total_loss_R += loss_R_stage * stage_weight
         total_loss_FL += loss_FL_stage * stage_weight
+        total_loss_k1 += loss_k1_stage * stage_weight
 
     # Average over all stages
     avg_loss_T = total_loss_T / n_stages
     avg_loss_R = total_loss_R / n_stages
     avg_loss_FL = total_loss_FL / n_stages
+    avg_loss_k1 = total_loss_k1 / n_stages
 
     # Compute total weighted camera loss
     total_camera_loss = (
         avg_loss_T * weight_trans +
         avg_loss_R * weight_rot +
-        avg_loss_FL * weight_focal
+        avg_loss_FL * weight_focal +
+        avg_loss_k1 * weight_k1
     )
 
     # Return loss dictionary with individual components
@@ -151,10 +162,11 @@ def compute_camera_loss(
         "loss_camera": total_camera_loss,
         "loss_T": avg_loss_T,
         "loss_R": avg_loss_R,
-        "loss_FL": avg_loss_FL
+        "loss_FL": avg_loss_FL,
+        "loss_k1": avg_loss_k1,
     }
 
-def camera_loss_single(pred_pose_enc, gt_pose_enc, loss_type="l1"):
+def camera_loss_single(pred_pose_enc, gt_pose_enc, loss_type="l1", has_k1=False):
     """
     Computes translation, rotation, and focal loss for a batch of pose encodings.
     
@@ -174,12 +186,14 @@ def camera_loss_single(pred_pose_enc, gt_pose_enc, loss_type="l1"):
         # Translation: first 3 dims; Rotation: next 4 (quaternion); Focal/Intrinsics: last dims
         loss_T = (pred_pose_enc[..., :3] - gt_pose_enc[..., :3]).abs()
         loss_R = (pred_pose_enc[..., 3:7] - gt_pose_enc[..., 3:7]).abs()
-        loss_FL = (pred_pose_enc[..., 7:] - gt_pose_enc[..., 7:]).abs()
+        loss_FL = (pred_pose_enc[..., 7:9] - gt_pose_enc[..., 7:9]).abs()
+        loss_k1 = (pred_pose_enc[..., 9:10] - gt_pose_enc[..., 9:10]).abs() if has_k1 else pred_pose_enc[..., :1] * 0
     elif loss_type == "l2":
         # L2 norm for each component
         loss_T = (pred_pose_enc[..., :3] - gt_pose_enc[..., :3]).norm(dim=-1, keepdim=True)
         loss_R = (pred_pose_enc[..., 3:7] - gt_pose_enc[..., 3:7]).norm(dim=-1)
-        loss_FL = (pred_pose_enc[..., 7:] - gt_pose_enc[..., 7:]).norm(dim=-1)
+        loss_FL = (pred_pose_enc[..., 7:9] - gt_pose_enc[..., 7:9]).norm(dim=-1)
+        loss_k1 = (pred_pose_enc[..., 9:10] - gt_pose_enc[..., 9:10]).norm(dim=-1) if has_k1 else pred_pose_enc[..., 0] * 0
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -187,13 +201,15 @@ def camera_loss_single(pred_pose_enc, gt_pose_enc, loss_type="l1"):
     loss_T = check_and_fix_inf_nan(loss_T, "loss_T")
     loss_R = check_and_fix_inf_nan(loss_R, "loss_R")
     loss_FL = check_and_fix_inf_nan(loss_FL, "loss_FL")
+    loss_k1 = check_and_fix_inf_nan(loss_k1, "loss_k1")
 
     # Clamp outlier translation loss to prevent instability, then average
     loss_T = loss_T.clamp(max=100).mean()
     loss_R = loss_R.mean()
     loss_FL = loss_FL.mean()
+    loss_k1 = loss_k1.mean()
 
-    return loss_T, loss_R, loss_FL
+    return loss_T, loss_R, loss_FL, loss_k1
 
 
 def compute_point_loss(predictions, batch, gamma=1.0, alpha=0.2, gradient_loss_fn = None, valid_range=-1, **kwargs):
@@ -805,5 +821,4 @@ def sequence_loss(flow_preds, flow_gt, vis, valids, gamma=0.8, vis_aware=False, 
 
     return flow_loss
 '''
-
 

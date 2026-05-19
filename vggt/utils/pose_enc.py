@@ -9,7 +9,11 @@ from .rotation import quat_to_mat, mat_to_quat
 
 
 def extri_intri_to_pose_encoding(
-    extrinsics, intrinsics, image_size_hw=None, pose_encoding_type="absT_quaR_FoV"  # e.g., (256, 512)
+    extrinsics,
+    intrinsics,
+    image_size_hw=None,
+    pose_encoding_type="absT_quaR_FoV",  # e.g., (256, 512)
+    distortions=None,
 ):
     """Convert camera extrinsics and intrinsics to a compact pose encoding.
 
@@ -31,9 +35,10 @@ def extri_intri_to_pose_encoding(
             Required for computing field of view values. For example: (256, 512).
         pose_encoding_type (str): Type of pose encoding to use. Currently only
             supports "absT_quaR_FoV" (absolute translation, quaternion rotation, field of view).
+        distortions (torch.Tensor, optional): SIMPLE_RADIAL k1 values with shape BxSx1.
 
     Returns:
-        torch.Tensor: Encoded camera pose parameters with shape BxSx9.
+        torch.Tensor: Encoded camera pose parameters with shape BxSx9 or BxSx10.
             For "absT_quaR_FoV" type, the 9 dimensions are:
             - [:3] = absolute translation vector T (3D)
             - [3:7] = rotation as quaternion quat (4D)
@@ -43,7 +48,7 @@ def extri_intri_to_pose_encoding(
     # extrinsics: BxSx3x4
     # intrinsics: BxSx3x3
 
-    if pose_encoding_type == "absT_quaR_FoV":
+    if pose_encoding_type in ("absT_quaR_FoV", "absT_quaR_FoV_k1"):
         R = extrinsics[:, :, :3, :3]  # BxSx3x3
         T = extrinsics[:, :, :3, 3]  # BxSx3
 
@@ -52,7 +57,12 @@ def extri_intri_to_pose_encoding(
         H, W = image_size_hw
         fov_h = 2 * torch.atan((H / 2) / intrinsics[..., 1, 1])
         fov_w = 2 * torch.atan((W / 2) / intrinsics[..., 0, 0])
-        pose_encoding = torch.cat([T, quat, fov_h[..., None], fov_w[..., None]], dim=-1).float()
+        pose_encoding = torch.cat([T, quat, fov_h[..., None], fov_w[..., None]], dim=-1)
+        if pose_encoding_type == "absT_quaR_FoV_k1":
+            if distortions is None:
+                distortions = torch.zeros(*pose_encoding.shape[:2], 1, device=pose_encoding.device, dtype=pose_encoding.dtype)
+            pose_encoding = torch.cat([pose_encoding, distortions[..., :1].to(pose_encoding)], dim=-1)
+        pose_encoding = pose_encoding.float()
     else:
         raise NotImplementedError
 
@@ -60,7 +70,11 @@ def extri_intri_to_pose_encoding(
 
 
 def pose_encoding_to_extri_intri(
-    pose_encoding, image_size_hw=None, pose_encoding_type="absT_quaR_FoV", build_intrinsics=True  # e.g., (256, 512)
+    pose_encoding,
+    image_size_hw=None,
+    pose_encoding_type="absT_quaR_FoV",
+    build_intrinsics=True,  # e.g., (256, 512)
+    return_distortion=False,
 ):
     """Convert a pose encoding back to camera extrinsics and intrinsics.
 
@@ -68,7 +82,7 @@ def pose_encoding_to_extri_intri(
     reconstructing the full camera parameters from the compact encoding.
 
     Args:
-        pose_encoding (torch.Tensor): Encoded camera pose parameters with shape BxSx9,
+        pose_encoding (torch.Tensor): Encoded camera pose parameters with shape BxSx9 or BxSx10,
             where B is batch size and S is sequence length.
             For "absT_quaR_FoV" type, the 9 dimensions are:
             - [:3] = absolute translation vector T (3D)
@@ -99,11 +113,15 @@ def pose_encoding_to_extri_intri(
 
     intrinsics = None
 
-    if pose_encoding_type == "absT_quaR_FoV":
+    distortion = None
+
+    if pose_encoding_type in ("absT_quaR_FoV", "absT_quaR_FoV_k1"):
         T = pose_encoding[..., :3]
         quat = pose_encoding[..., 3:7]
         fov_h = pose_encoding[..., 7]
         fov_w = pose_encoding[..., 8]
+        if pose_encoding_type == "absT_quaR_FoV_k1":
+            distortion = pose_encoding[..., 9:10]
 
         R = quat_to_mat(quat)
         extrinsics = torch.cat([R, T[..., None]], dim=-1)
@@ -121,4 +139,6 @@ def pose_encoding_to_extri_intri(
     else:
         raise NotImplementedError
 
+    if return_distortion:
+        return extrinsics, intrinsics, distortion
     return extrinsics, intrinsics

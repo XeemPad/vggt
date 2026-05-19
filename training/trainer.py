@@ -204,6 +204,7 @@ class Trainer:
         
         # Load model state
         model_state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+        model_state_dict = self._adapt_camera_head_checkpoint(model_state_dict)
         missing, unexpected = self.model.load_state_dict(
             model_state_dict, strict=self.checkpoint_conf.strict
         )
@@ -211,9 +212,10 @@ class Trainer:
             logging.info(f"Model state loaded. Missing keys: {missing or 'None'}. Unexpected keys: {unexpected or 'None'}.")
 
         # Load optimizer state if available and in training mode
-        if "optimizer" in checkpoint:
+        if "optimizer" in checkpoint and getattr(self.checkpoint_conf, "load_optimizer", True):
             logging.info(f"Loading optimizer state dict (rank {self.rank})")
-            self.optims.optimizer.load_state_dict(checkpoint["optimizer"])
+            optimizer_state = checkpoint["optimizer"][0] if isinstance(checkpoint["optimizer"], list) else checkpoint["optimizer"]
+            self.optims[0].optimizer.load_state_dict(optimizer_state)
 
         # Load training progress
         if "epoch" in checkpoint:
@@ -224,6 +226,37 @@ class Trainer:
         # Load AMP scaler state if available
         if self.optim_conf.amp.enabled and "scaler" in checkpoint:
             self.scaler.load_state_dict(checkpoint["scaler"])
+
+    def _adapt_camera_head_checkpoint(self, model_state_dict: Mapping[str, torch.Tensor]) -> Mapping[str, torch.Tensor]:
+        """Expand pretrained 9D camera-head tensors to 10D by zero-initializing k1."""
+        current_state = self.model.state_dict()
+        adapted_state = dict(model_state_dict)
+
+        for key, old_value in list(model_state_dict.items()):
+            if key not in current_state:
+                continue
+            new_value = current_state[key]
+            if old_value.shape == new_value.shape:
+                continue
+            if "camera_head" not in key:
+                continue
+
+            expanded = torch.zeros_like(new_value)
+            if old_value.ndim == 3 and old_value.shape[-1] + 1 == new_value.shape[-1]:
+                expanded[..., : old_value.shape[-1]] = old_value
+            elif old_value.ndim == 2 and old_value.shape[1] + 1 == new_value.shape[1]:
+                expanded[:, : old_value.shape[1]] = old_value
+            elif old_value.ndim == 2 and old_value.shape[0] + 1 == new_value.shape[0]:
+                expanded[: old_value.shape[0], :] = old_value
+            elif old_value.ndim == 1 and old_value.shape[0] + 1 == new_value.shape[0]:
+                expanded[: old_value.shape[0]] = old_value
+            else:
+                continue
+
+            adapted_state[key] = expanded
+            logging.info(f"Expanded {key} from {tuple(old_value.shape)} to {tuple(new_value.shape)} with zero k1 init.")
+
+        return adapted_state
 
     def _setup_device(self, device: str):
         """Sets up the device for training (CPU or CUDA)."""
@@ -697,6 +730,7 @@ class Trainer:
         tensor_keys = [
             "images", "depths", "extrinsics", "intrinsics", 
             "cam_points", "world_points", "point_masks", 
+            "distortions",
         ]        
         string_keys = ["seq_name"]
         
@@ -865,4 +899,3 @@ def get_chunk_from_data(data: Any, chunk_id: int, num_chunks: int) -> Any:
         return [get_chunk_from_data(value, chunk_id, num_chunks) for value in data]
     else:
         return data
-

@@ -311,7 +311,8 @@ def _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params=None):
         focal = (intrinsics[fidx][0, 0] + intrinsics[fidx][1, 1]) / 2
         pycolmap_intri = np.array([focal, intrinsics[fidx][0, 2], intrinsics[fidx][1, 2]])
     elif camera_type == "SIMPLE_RADIAL":
-        raise NotImplementedError("SIMPLE_RADIAL is not supported yet")
+        if extra_params is None:
+            raise ValueError("SIMPLE_RADIAL requires extra_params with shape (N, 1)")
         focal = (intrinsics[fidx][0, 0] + intrinsics[fidx][1, 1]) / 2
         pycolmap_intri = np.array([focal, intrinsics[fidx][0, 2], intrinsics[fidx][1, 2], extra_params[fidx][0]])
     else:

@@ -114,6 +114,9 @@ class ComposedDataset(Dataset, ABC):
         depths = torch.from_numpy(np.stack(batch["depths"]).astype(np.float32))
         extrinsics = torch.from_numpy(np.stack(batch["extrinsics"]).astype(np.float32))
         intrinsics = torch.from_numpy(np.stack(batch["intrinsics"]).astype(np.float32))
+        distortions = None
+        if "distortions" in batch:
+            distortions = torch.from_numpy(np.stack(batch["distortions"]).astype(np.float32))
         cam_points = torch.from_numpy(np.stack(batch["cam_points"]).astype(np.float32))
         world_points = torch.from_numpy(np.stack(batch["world_points"]).astype(np.float32))
         point_masks = torch.from_numpy(np.stack(batch["point_masks"])) # Mask indicating valid depths / world points / cam points per frame
@@ -143,6 +146,8 @@ class ComposedDataset(Dataset, ABC):
             "world_points": world_points,
             "point_masks": point_masks,
         }
+        if distortions is not None:
+            sample["distortions"] = distortions
 
         # --- Track Processing (if enabled) ---
         if self.load_track:

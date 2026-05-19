@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 
-def activate_pose(pred_pose_enc, trans_act="linear", quat_act="linear", fl_act="linear"):
+def activate_pose(pred_pose_enc, trans_act="linear", quat_act="linear", fl_act="linear", pose_encoding_type="absT_quaR_FoV"):
     """
     Activate pose parameters with specified activation functions.
 
@@ -17,20 +17,27 @@ def activate_pose(pred_pose_enc, trans_act="linear", quat_act="linear", fl_act="
         pred_pose_enc: Tensor containing encoded pose parameters [translation, quaternion, focal length]
         trans_act: Activation type for translation component
         quat_act: Activation type for quaternion component
-        fl_act: Activation type for focal length component
+        fl_act: Activation type for field-of-view component
+        pose_encoding_type: Camera encoding layout. Use "absT_quaR_FoV_k1" for a linear k1 tail.
 
     Returns:
         Activated pose parameters tensor
     """
     T = pred_pose_enc[..., :3]
     quat = pred_pose_enc[..., 3:7]
-    fl = pred_pose_enc[..., 7:]  # or fov
+    fov = pred_pose_enc[..., 7:9]
 
     T = base_pose_act(T, trans_act)
     quat = base_pose_act(quat, quat_act)
-    fl = base_pose_act(fl, fl_act)  # or fov
+    fov = base_pose_act(fov, fl_act)
 
-    pred_pose_enc = torch.cat([T, quat, fl], dim=-1)
+    if pose_encoding_type == "absT_quaR_FoV":
+        pred_pose_enc = torch.cat([T, quat, fov], dim=-1)
+    elif pose_encoding_type == "absT_quaR_FoV_k1":
+        k1 = pred_pose_enc[..., 9:10]
+        pred_pose_enc = torch.cat([T, quat, fov, k1], dim=-1)
+    else:
+        raise ValueError(f"Unsupported camera encoding type: {pose_encoding_type}")
 
     return pred_pose_enc
 

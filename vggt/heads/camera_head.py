@@ -37,8 +37,11 @@ class CameraHead(nn.Module):
     ):
         super().__init__()
 
+        self.pose_encoding_type = pose_encoding_type
         if pose_encoding_type == "absT_quaR_FoV":
             self.target_dim = 9
+        elif pose_encoding_type == "absT_quaR_FoV_k1":
+            self.target_dim = 10
         else:
             raise ValueError(f"Unsupported camera encoding type: {pose_encoding_type}")
 
@@ -134,7 +137,11 @@ class CameraHead(nn.Module):
 
             # Apply final activation functions for translation, quaternion, and field-of-view.
             activated_pose = activate_pose(
-                pred_pose_enc, trans_act=self.trans_act, quat_act=self.quat_act, fl_act=self.fl_act
+                pred_pose_enc,
+                trans_act=self.trans_act,
+                quat_act=self.quat_act,
+                fl_act=self.fl_act,
+                pose_encoding_type=self.pose_encoding_type,
             )
             pred_pose_enc_list.append(activated_pose)
 
