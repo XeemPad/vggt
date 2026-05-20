@@ -9,7 +9,7 @@ seed_value: 42
 accum_steps: 1
 patch_size: 14
 val_epoch_freq: 1
-max_img_per_gpu: 12
+max_img_per_gpu: 22
 
 limit_train_batches: 100
 limit_val_batches: 20
@@ -24,6 +24,7 @@ data:
       patch_size: ${patch_size}
       debug: False
       repeat_batch: False
+      inside_random: False
       img_nums: [2, 8]
     dataset:
       _target_: data.composed_dataset.ComposedDataset
@@ -42,6 +43,7 @@ data:
       img_size: ${img_size}
       patch_size: ${patch_size}
       debug: False
+      inside_random: False
       img_nums: [2, 8]
     dataset:
       _target_: data.composed_dataset.ComposedDataset
@@ -106,7 +108,7 @@ optim:
   param_group_modifiers: False
   optimizer:
     _target_: torch.optim.AdamW
-    lr: 5e-6
+    lr: 3e-6
     weight_decay: 0.01
   frozen_module_names:
     - "*aggregator*"
