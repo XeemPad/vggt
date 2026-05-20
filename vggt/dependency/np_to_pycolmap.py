@@ -207,6 +207,7 @@ def batch_np_matrix_to_pycolmap_wo_track(
     image_size,
     shared_camera=False,
     camera_type="SIMPLE_PINHOLE",
+    extra_params=None,
 ):
     """
     Convert Batched NumPy Arrays to PyCOLMAP
@@ -239,7 +240,7 @@ def batch_np_matrix_to_pycolmap_wo_track(
     for fidx in range(N):
         # set camera
         if camera is None or (not shared_camera):
-            pycolmap_intri = _build_pycolmap_intri(fidx, intrinsics, camera_type)
+            pycolmap_intri = _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params)
 
             camera = pycolmap.Camera(
                 model=camera_type, width=image_size[0], height=image_size[1], params=pycolmap_intri, camera_id=fidx + 1
