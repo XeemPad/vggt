@@ -9,7 +9,7 @@ seed_value: 42
 accum_steps: 1
 patch_size: 14
 val_epoch_freq: 1
-max_img_per_gpu: 12
+max_img_per_gpu: 24
 
 limit_train_batches: 100
 limit_val_batches: 20
@@ -24,7 +24,7 @@ data:
       patch_size: ${patch_size}
       debug: False
       repeat_batch: False
-      img_nums: [2, 8]
+      img_nums: [2, 2]
     dataset:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
@@ -42,7 +42,7 @@ data:
       img_size: ${img_size}
       patch_size: ${patch_size}
       debug: False
-      img_nums: [2, 8]
+      img_nums: [2, 2]
     dataset:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
@@ -97,7 +97,7 @@ loss:
     weight_trans: 1.0
     weight_rot: 1.0
     weight_focal: 0.5
-    weight_k1: 0.1
+    weight_k1: 1.0
   depth: null
   point: null
   track: null
@@ -106,7 +106,7 @@ optim:
   param_group_modifiers: False
   optimizer:
     _target_: torch.optim.AdamW
-    lr: 5e-6
+    lr: 1e-5
     weight_decay: 0.01
   frozen_module_names:
     - "*aggregator*"
@@ -129,7 +129,7 @@ optim:
           _target_: fvcore.common.param_scheduler.ConstantParamScheduler
           value: 0.01
 
-max_epochs: 2
+max_epochs: 3
 
 model:
   _target_: vggt.models.vggt.VGGT
