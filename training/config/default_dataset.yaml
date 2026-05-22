@@ -43,6 +43,14 @@ data:
           p: 0.9
         gray_scale: True
         gau_blur: False
+        radial_distortion:
+          enabled: False
+          p: 0.5
+          delta_range: [-0.05, 0.05]
+          shared: True
+          clamp_range: [-0.3, 0.3]
+          num_iters: 8
+          padding_mode: border
   val:
     _target_: data.dynamic_dataloader.DynamicTorchDataset
     num_workers: 8
@@ -78,3 +86,5 @@ data:
         color_jitter: null
         gray_scale: False
         gau_blur: False
+        radial_distortion:
+          enabled: False

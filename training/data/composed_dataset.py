@@ -15,7 +15,7 @@ from torch.utils.data import ConcatDataset
 import bisect
 from .dataset_util import *
 from .track_util import *
-from .augmentation import get_image_augmentation
+from .augmentation import get_image_augmentation, apply_random_simple_radial_augmentation
 
 
 class ComposedDataset(Dataset, ABC):
@@ -57,6 +57,7 @@ class ComposedDataset(Dataset, ABC):
             gray_scale=common_config.augs.gray_scale,
             gau_blur=common_config.augs.gau_blur,
         )
+        self.radial_distortion_aug = common_config.augs.get("radial_distortion", None)
 
         # --- Optional Fixed Settings (useful for debugging) ---
         # Force each sequence to have exactly this many images (if > 0)
@@ -122,6 +123,20 @@ class ComposedDataset(Dataset, ABC):
         point_masks = torch.from_numpy(np.stack(batch["point_masks"])) # Mask indicating valid depths / world points / cam points per frame
         ids = torch.from_numpy(batch["ids"])    # Frame indices sampled from the original sequence
 
+
+        if distortions is not None and self.radial_distortion_aug is not None:
+            if self.radial_distortion_aug.get("enabled", False):
+                images, distortions = apply_random_simple_radial_augmentation(
+                    images,
+                    intrinsics,
+                    distortions,
+                    probability=self.radial_distortion_aug.get("p", 0.5),
+                    delta_range=self.radial_distortion_aug.get("delta_range", (-0.05, 0.05)),
+                    shared=self.radial_distortion_aug.get("shared", True),
+                    clamp_range=self.radial_distortion_aug.get("clamp_range", (-0.3, 0.3)),
+                    num_iters=self.radial_distortion_aug.get("num_iters", 8),
+                    padding_mode=self.radial_distortion_aug.get("padding_mode", "border"),
+                )
 
         # --- Apply Color Augmentation (training mode only) ---
         if self.training and self.image_aug is not None:
