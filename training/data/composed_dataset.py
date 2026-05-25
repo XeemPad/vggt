@@ -124,8 +124,10 @@ class ComposedDataset(Dataset, ABC):
         ids = torch.from_numpy(batch["ids"])    # Frame indices sampled from the original sequence
 
 
-        if distortions is not None and self.radial_distortion_aug is not None:
-            if self.radial_distortion_aug.get("enabled", False):
+        if self.radial_distortion_aug is not None and self.radial_distortion_aug.get("enabled", False):
+            if distortions is None and self.radial_distortion_aug.get("synthetic_from_zero", False):
+                distortions = torch.zeros((len(images), 1), dtype=intrinsics.dtype)
+            if distortions is not None:
                 images, distortions = apply_random_simple_radial_augmentation(
                     images,
                     intrinsics,

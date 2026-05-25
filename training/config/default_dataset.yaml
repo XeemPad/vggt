@@ -45,6 +45,7 @@ data:
         gau_blur: False
         radial_distortion:
           enabled: False
+          synthetic_from_zero: False
           p: 0.5
           delta_range: [-0.05, 0.05]
           shared: True
@@ -88,3 +89,4 @@ data:
         gau_blur: False
         radial_distortion:
           enabled: False
+          synthetic_from_zero: False
