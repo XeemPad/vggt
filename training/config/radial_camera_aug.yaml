@@ -9,7 +9,7 @@ seed_value: 42
 accum_steps: 1
 patch_size: 14
 val_epoch_freq: 1
-max_img_per_gpu: 20
+max_img_per_gpu: 17
 
 limit_train_batches: 100
 limit_val_batches: 20
@@ -25,7 +25,7 @@ data:
       debug: False
       repeat_batch: False
       inside_random: False
-      img_nums: [1, 20]
+      img_nums: [1, 12]
       augs:
         radial_distortion:
           enabled: True
@@ -53,7 +53,7 @@ data:
       patch_size: ${patch_size}
       debug: False
       inside_random: False
-      img_nums: [1, 20]
+      img_nums: [1, 12]
       augs:
         radial_distortion:
           enabled: True
