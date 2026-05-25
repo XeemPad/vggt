@@ -71,6 +71,7 @@ class Co3dDataset(BaseDataset):
         split: str = "train",
         CO3D_DIR: str = None,
         CO3D_ANNOTATION_DIR: str = None,
+        categories: list = None,
         min_num_images: int = 24,
         len_train: int = 100000,
         len_test: int = 10000,
@@ -83,6 +84,7 @@ class Co3dDataset(BaseDataset):
             split (str): Dataset split, either 'train' or 'test'.
             CO3D_DIR (str): Directory path to CO3D data.
             CO3D_ANNOTATION_DIR (str): Directory path to CO3D annotations.
+            categories (list): Optional subset of CO3D categories to load.
             min_num_images (int): Minimum number of images per sequence.
             len_train (int): Length of the training dataset.
             len_test (int): Length of the test dataset.
@@ -101,7 +103,10 @@ class Co3dDataset(BaseDataset):
         if CO3D_DIR is None or CO3D_ANNOTATION_DIR is None:
             raise ValueError("Both CO3D_DIR and CO3D_ANNOTATION_DIR must be specified.")
 
-        category = sorted(SEEN_CATEGORIES)
+        category = sorted(categories if categories is not None else SEEN_CATEGORIES)
+        invalid_categories = sorted(set(category) - set(SEEN_CATEGORIES))
+        if invalid_categories:
+            raise ValueError(f"Unsupported CO3D categories: {invalid_categories}")
 
         if self.debug:
             category = ["apple"]
@@ -158,6 +163,14 @@ class Co3dDataset(BaseDataset):
         status = "Training" if self.training else "Testing"
         logging.info(f"{status}: Co3D Data size: {self.sequence_list_len}")
         logging.info(f"{status}: Co3D Data dataset length: {len(self)}")
+        if self.sequence_list_len == 0:
+            expected_files = [osp.join(self.CO3D_ANNOTATION_DIR, f"{c}_{split_name_list[0]}.jgz") for c in category]
+            raise ValueError(
+                f"No valid CO3D sequences loaded for split={split}. "
+                f"Expected annotation files under {self.CO3D_ANNOTATION_DIR}: {expected_files}. "
+                f"Each sequence must contain at least {min_num_images} retained frames. "
+                "If a subset was generated, do not train from a --dry_run result and use the same categories."
+            )
 
     def get_data(
         self,
