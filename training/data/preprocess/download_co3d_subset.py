@@ -72,6 +72,11 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--keep_archives", action="store_true", help="Keep downloaded official ZIP chunks.")
     parser.add_argument(
+        "--existing_only",
+        action="store_true",
+        help="Create annotations only from complete frames already present in OUTPUT_DIR; do not download ZIP data.",
+    )
+    parser.add_argument(
         "--dry_run",
         action="store_true",
         help="Only download/read annotations and report the selected image budget.",
@@ -154,18 +159,42 @@ def select_split(annotations, categories, split, budget, max_frames, min_frames,
     return selected, retained
 
 
+def frame_asset_paths(frame):
+    image_path = normalized_relative_path(frame["filepath"])
+    depth_path = image_path.replace("/images/", "/depths/") + ".geometric.png"
+    mask_path = image_path.replace("/images/", "/depth_masks/")
+    if mask_path.endswith(".jpg"):
+        mask_path = mask_path[:-4] + ".png"
+    return image_path, depth_path, mask_path
+
+
+def filter_annotations_to_existing_assets(annotations, categories, output_dir):
+    filtered = {}
+    retained_frames = 0
+    for category in categories:
+        filtered[category] = {}
+        for split in ("train", "test"):
+            filtered[category][split] = {}
+            for sequence_name, frames in annotations[category][split].items():
+                present_frames = [
+                    frame
+                    for frame in frames
+                    if all((output_dir / relative).is_file() for relative in frame_asset_paths(frame))
+                ]
+                if present_frames:
+                    filtered[category][split][sequence_name] = present_frames
+                    retained_frames += len(present_frames)
+    print(f"Found {retained_frames} annotated frames with complete existing RGB/depth/mask assets.")
+    return filtered
+
+
 def required_assets(selected_by_split):
     required = defaultdict(set)
     for selected in selected_by_split.values():
         for category, sequences in selected.items():
             for frames in sequences.values():
                 for frame in frames:
-                    image_path = normalized_relative_path(frame["filepath"])
-                    depth_path = image_path.replace("/images/", "/depths/") + ".geometric.png"
-                    mask_path = image_path.replace("/images/", "/depth_masks/")
-                    if mask_path.endswith(".jpg"):
-                        mask_path = mask_path[:-4] + ".png"
-                    required[category].update((image_path, depth_path, mask_path))
+                    required[category].update(frame_asset_paths(frame))
     return required
 
 
@@ -226,6 +255,8 @@ def main():
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     annotations = load_or_download_annotations(requested_categories, cache_dir)
+    if args.existing_only:
+        annotations = filter_annotations_to_existing_assets(annotations, requested_categories, args.output_dir)
     test_budget = int(round(args.max_images * args.val_fraction))
     train_budget = args.max_images - test_budget
     if test_budget < args.min_frames_per_scene:
@@ -252,6 +283,11 @@ def main():
         if train_scenes or test_scenes:
             print(f"  {category}: {train_scenes} train scenes, {test_scenes} test scenes, {len(required[category]) // 3} images")
     if args.dry_run:
+        return
+    if args.existing_only:
+        write_filtered_annotations(selected_by_split, requested_categories, args.annotation_dir)
+        print(f"Filtered VGGT annotations written to: {args.annotation_dir}")
+        print("No CO3D ZIP archives were downloaded because --existing_only was enabled.")
         return
 
     links_path = cache_dir / "links.json"

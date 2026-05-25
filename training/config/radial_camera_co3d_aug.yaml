@@ -41,7 +41,7 @@ data:
       dataset_configs:
         - _target_: data.datasets.co3d.Co3dDataset
           split: train
-          categories: [apple]
+          categories: [bicycle, car]
           CO3D_DIR: /YOUR/PATH/TO/CO3D
           CO3D_ANNOTATION_DIR: /YOUR/PATH/TO/CO3D_ANNOTATION
           len_train: 100000
@@ -70,7 +70,7 @@ data:
       dataset_configs:
         - _target_: data.datasets.co3d.Co3dDataset
           split: test
-          categories: [apple]
+          categories: [bicycle, car]
           CO3D_DIR: /YOUR/PATH/TO/CO3D
           CO3D_ANNOTATION_DIR: /YOUR/PATH/TO/CO3D_ANNOTATION
           len_test: 10000

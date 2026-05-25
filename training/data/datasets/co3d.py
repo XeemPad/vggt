@@ -197,7 +197,7 @@ class Co3dDataset(BaseDataset):
             seq_index = random.randint(0, self.sequence_list_len - 1)
             
         if seq_name is None:
-            seq_name = self.sequence_list[seq_index]
+            seq_name = self.sequence_list[seq_index % self.sequence_list_len]
 
         metadata = self.data_store[seq_name]
 
