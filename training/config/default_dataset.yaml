@@ -52,6 +52,8 @@ data:
           clamp_range: [-0.3, 0.3]
           num_iters: 8
           padding_mode: border
+          debug_save_dir: null
+          debug_save_count: 0
   val:
     _target_: data.dynamic_dataloader.DynamicTorchDataset
     num_workers: 8
@@ -90,3 +92,5 @@ data:
         radial_distortion:
           enabled: False
           synthetic_from_zero: False
+          debug_save_dir: null
+          debug_save_count: 0

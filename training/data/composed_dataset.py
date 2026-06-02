@@ -5,6 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 from abc import ABC
+import os
+from pathlib import Path
 
 from hydra.utils import instantiate
 import torch
@@ -12,6 +14,7 @@ import random
 import numpy as np
 from torch.utils.data import Dataset
 from torch.utils.data import ConcatDataset
+from torchvision.utils import save_image
 import bisect
 from .dataset_util import *
 from .track_util import *
@@ -58,6 +61,7 @@ class ComposedDataset(Dataset, ABC):
             gau_blur=common_config.augs.gau_blur,
         )
         self.radial_distortion_aug = common_config.augs.get("radial_distortion", None)
+        self.radial_debug_saved = 0
 
         # --- Optional Fixed Settings (useful for debugging) ---
         # Force each sequence to have exactly this many images (if > 0)
@@ -81,6 +85,24 @@ class ComposedDataset(Dataset, ABC):
     def __len__(self):
         """Returns the total number of sequences in the dataset."""
         return self.total_samples
+
+    def _save_radial_debug_preview(self, before, after, old_distortions, new_distortions):
+        debug_dir = self.radial_distortion_aug.get("debug_save_dir", None)
+        max_count = int(self.radial_distortion_aug.get("debug_save_count", 0))
+        if not debug_dir or self.radial_debug_saved >= max_count:
+            return
+        if torch.equal(old_distortions, new_distortions):
+            return
+
+        output_dir = Path(debug_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stem = f"radial_pid{os.getpid()}_{self.radial_debug_saved:03d}"
+        save_image(torch.cat([before, after], dim=0), output_dir / f"{stem}.png", nrow=len(before))
+        with (output_dir / f"{stem}.txt").open("w", encoding="utf-8") as stream:
+            stream.write(f"top row: before radial augmentation\nbottom row: after radial augmentation\n")
+            stream.write(f"k1_before: {old_distortions[:, 0].tolist()}\n")
+            stream.write(f"k1_after: {new_distortions[:, 0].tolist()}\n")
+        self.radial_debug_saved += 1
 
 
     def __getitem__(self, idx_tuple):
@@ -124,10 +146,21 @@ class ComposedDataset(Dataset, ABC):
         ids = torch.from_numpy(batch["ids"])    # Frame indices sampled from the original sequence
 
 
-        if self.radial_distortion_aug is not None and self.radial_distortion_aug.get("enabled", False):
+        if (
+            self.radial_distortion_aug is not None
+            and self.radial_distortion_aug.get("enabled", False)
+            and not batch.get("radial_distortion_applied", False)
+        ):
             if distortions is None and self.radial_distortion_aug.get("synthetic_from_zero", False):
                 distortions = torch.zeros((len(images), 1), dtype=intrinsics.dtype)
             if distortions is not None:
+                capture_preview = (
+                    self.radial_distortion_aug.get("debug_save_dir", None)
+                    and self.radial_debug_saved < int(self.radial_distortion_aug.get("debug_save_count", 0))
+                )
+                if capture_preview:
+                    images_before = images.clone()
+                    distortions_before = distortions.clone()
                 images, distortions = apply_random_simple_radial_augmentation(
                     images,
                     intrinsics,
@@ -139,6 +172,8 @@ class ComposedDataset(Dataset, ABC):
                     num_iters=self.radial_distortion_aug.get("num_iters", 8),
                     padding_mode=self.radial_distortion_aug.get("padding_mode", "border"),
                 )
+                if capture_preview:
+                    self._save_radial_debug_preview(images_before, images, distortions_before, distortions)
 
         # --- Apply Color Augmentation (training mode only) ---
         if self.training and self.image_aug is not None:

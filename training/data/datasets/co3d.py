@@ -13,10 +13,12 @@ import logging
 import cv2
 import random
 import numpy as np
+import torch
 
 
 from data.dataset_util import *
 from data.base_dataset import BaseDataset
+from data.augmentation import apply_random_simple_radial_augmentation
 
 
 SEEN_CATEGORIES = [
@@ -63,6 +65,93 @@ SEEN_CATEGORIES = [
     "wineglass",
 ]
 
+COLMAP_CAMERA_PARAM_NAMES = {
+    "SIMPLE_PINHOLE": ("f", "cx", "cy"),
+    "PINHOLE": ("fx", "fy", "cx", "cy"),
+    "SIMPLE_RADIAL": ("f", "cx", "cy", "k1"),
+    "RADIAL": ("f", "cx", "cy", "k1", "k2"),
+    "OPENCV": ("fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2"),
+    "OPENCV_FISHEYE": ("fx", "fy", "cx", "cy", "k1", "k2", "k3", "k4"),
+    "FULL_OPENCV": ("fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2", "k3", "k4", "k5", "k6"),
+    "FOV": ("fx", "fy", "cx", "cy", "omega"),
+    "SIMPLE_RADIAL_FISHEYE": ("f", "cx", "cy", "k1"),
+    "RADIAL_FISHEYE": ("f", "cx", "cy", "k1", "k2"),
+    "THIN_PRISM_FISHEYE": ("fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2", "k3", "k4", "sx1", "sy1"),
+    "RAD_TAN_THIN_PRISM_FISHEYE": ("fx", "fy", "cx", "cy", "k0", "k1", "k2", "k3", "k4", "k5", "p0", "p1", "sx0", "sy0", "sx1", "sy1"),
+    "SIMPLE_DIVISION": ("f", "cx", "cy", "k"),
+    "DIVISION": ("fx", "fy", "cx", "cy", "k"),
+    "SIMPLE_FISHEYE": ("f", "cx", "cy"),
+    "FISHEYE": ("fx", "fy", "cx", "cy"),
+}
+
+
+def _as_scalar(value):
+    arr = np.asarray(value, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        return None
+    return float(arr[0])
+
+
+def _k1_from_mapping(mapping):
+    if not isinstance(mapping, dict):
+        return None
+
+    for key in ("k1", "radial_distortion", "distortion_k1"):
+        if key in mapping:
+            return _as_scalar(mapping[key])
+
+    for key in ("distortion", "distortions", "distortion_params", "extra_params"):
+        if key not in mapping:
+            continue
+        value = mapping[key]
+        if isinstance(value, dict):
+            for distortion_key in ("k1", "k0", "k"):
+                if distortion_key in value:
+                    return _as_scalar(value[distortion_key])
+        else:
+            scalar = _as_scalar(value)
+            if scalar is not None:
+                return scalar
+
+    model = None
+    for key in ("camera_model", "camera_type", "model"):
+        if key in mapping and mapping[key] is not None:
+            model = mapping[key]
+            break
+
+    params = None
+    for key in ("camera_params", "params", "colmap_params"):
+        if key in mapping and mapping[key] is not None:
+            params = mapping[key]
+            break
+
+    if model is not None and params is not None:
+        model = str(model).upper()
+        param_names = COLMAP_CAMERA_PARAM_NAMES.get(model)
+        if param_names is not None:
+            params = np.asarray(params, dtype=np.float32).reshape(-1)
+            for param_name in ("k1", "k0", "k"):
+                if param_name in param_names:
+                    index = param_names.index(param_name)
+                    if index < len(params):
+                        return float(params[index])
+
+    for key in ("camera", "viewpoint", "intrinsics", "colmap_camera"):
+        value = mapping.get(key)
+        if isinstance(value, dict):
+            k1 = _k1_from_mapping(value)
+            if k1 is not None:
+                return k1
+
+    return None
+
+
+def _extract_simple_radial_k1(anno):
+    k1 = _k1_from_mapping(anno)
+    if k1 is None:
+        return None
+    return np.array([k1], dtype=np.float32)
+
 
 class Co3dDataset(BaseDataset):
     def __init__(
@@ -99,6 +188,7 @@ class Co3dDataset(BaseDataset):
         self.load_depth = common_conf.load_depth
         self.inside_random = common_conf.inside_random
         self.allow_duplicate_img = common_conf.allow_duplicate_img
+        self.radial_distortion_aug = common_conf.augs.get("radial_distortion", None)
 
         if CO3D_DIR is None or CO3D_ANNOTATION_DIR is None:
             raise ValueError("Both CO3D_DIR and CO3D_ANNOTATION_DIR must be specified.")
@@ -217,8 +307,18 @@ class Co3dDataset(BaseDataset):
         point_masks = []
         extrinsics = []
         intrinsics = []
+        distortions = []
         image_paths = []
         original_sizes = []
+
+        raw_images = []
+        raw_depths = []
+        raw_extrinsics = []
+        raw_intrinsics = []
+        raw_distortions = []
+        raw_filepaths = []
+        raw_image_paths = []
+        raw_original_sizes = []
 
         for anno in annos:
             filepath = anno["filepath"]
@@ -245,6 +345,67 @@ class Co3dDataset(BaseDataset):
             original_size = np.array(image.shape[:2])
             extri_opencv = np.array(anno["extri"])
             intri_opencv = np.array(anno["intri"])
+            distortion = _extract_simple_radial_k1(anno)
+
+            raw_images.append(image)
+            raw_depths.append(depth_map)
+            raw_extrinsics.append(extri_opencv)
+            raw_intrinsics.append(intri_opencv)
+            raw_distortions.append(distortion)
+            raw_filepaths.append(filepath)
+            raw_image_paths.append(image_path)
+            raw_original_sizes.append(original_size)
+
+        radial_distortion_applied = False
+        if self.radial_distortion_aug is not None and self.radial_distortion_aug.get("enabled", False):
+            valid_distortions = all(distortion is not None for distortion in raw_distortions)
+            if not valid_distortions and self.radial_distortion_aug.get("synthetic_from_zero", False):
+                raw_distortions = [
+                    np.zeros(1, dtype=np.float32) if distortion is None else distortion
+                    for distortion in raw_distortions
+                ]
+                valid_distortions = True
+
+            same_shape = len({image.shape for image in raw_images}) == 1
+            if valid_distortions and same_shape:
+                image_tensor = torch.from_numpy(np.stack(raw_images).astype(np.float32)).permute(0, 3, 1, 2)
+                intrinsics_tensor = torch.from_numpy(np.stack(raw_intrinsics).astype(np.float32))
+                distortions_tensor = torch.from_numpy(np.stack(raw_distortions).astype(np.float32))
+                image_tensor, distortions_tensor = apply_random_simple_radial_augmentation(
+                    image_tensor,
+                    intrinsics_tensor,
+                    distortions_tensor,
+                    probability=self.radial_distortion_aug.get("p", 0.5),
+                    delta_range=self.radial_distortion_aug.get("delta_range", (-0.05, 0.05)),
+                    shared=self.radial_distortion_aug.get("shared", True),
+                    clamp_range=self.radial_distortion_aug.get("clamp_range", (-0.3, 0.3)),
+                    num_iters=self.radial_distortion_aug.get("num_iters", 8),
+                    padding_mode=self.radial_distortion_aug.get("padding_mode", "border"),
+                )
+                raw_images = [
+                    image.permute(1, 2, 0).numpy().clip(0, 255).astype(np.float32)
+                    for image in image_tensor
+                ]
+                raw_distortions = [
+                    distortion.numpy().astype(np.float32)
+                    for distortion in distortions_tensor
+                ]
+                radial_distortion_applied = True
+            elif valid_distortions:
+                logging.warning(
+                    f"Skipping pre-process radial augmentation for {seq_name}: selected frames have different shapes."
+                )
+
+        for image, depth_map, extri_opencv, intri_opencv, distortion, filepath, image_path, original_size in zip(
+            raw_images,
+            raw_depths,
+            raw_extrinsics,
+            raw_intrinsics,
+            raw_distortions,
+            raw_filepaths,
+            raw_image_paths,
+            raw_original_sizes,
+        ):
 
             (
                 image,
@@ -269,6 +430,8 @@ class Co3dDataset(BaseDataset):
             depths.append(depth_map)
             extrinsics.append(extri_opencv)
             intrinsics.append(intri_opencv)
+            if distortion is not None:
+                distortions.append(distortion)
             cam_points.append(cam_coords_points)
             world_points.append(world_coords_points)
             point_masks.append(point_mask)
@@ -290,4 +453,8 @@ class Co3dDataset(BaseDataset):
             "point_masks": point_masks,
             "original_sizes": original_sizes,
         }
+        if len(distortions) == len(extrinsics):
+            batch["distortions"] = distortions
+        if radial_distortion_applied:
+            batch["radial_distortion_applied"] = True
         return batch
