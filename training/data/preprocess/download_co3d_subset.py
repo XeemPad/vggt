@@ -32,6 +32,17 @@ VGGT_SEEN_CATEGORIES = [
 ]
 
 
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in ("1", "true", "yes", "y", "on"):
+        return True
+    if normalized in ("0", "false", "no", "n", "off"):
+        return False
+    raise argparse.ArgumentTypeError(f"Expected boolean value, got {value!r}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Download a random CO3Dv2 scene subset for VGGT training."
@@ -55,6 +66,18 @@ def parse_args():
         default="apple",
         help="Comma-separated eligible categories; default is one category to limit ZIP downloads.",
     )
+    parser.add_argument(
+        "--max_categories",
+        type=int,
+        default=None,
+        help="Limit the number of requested categories before downloading data.",
+    )
+    parser.add_argument(
+        "--category_selection",
+        choices=("first", "random"),
+        default="first",
+        help="How to choose categories when --max_categories is set.",
+    )
     parser.add_argument("--max_images", type=int, default=20000, help="Maximum retained images over train+test.")
     parser.add_argument("--val_fraction", type=float, default=0.1, help="Fraction of image budget for test split.")
     parser.add_argument(
@@ -70,7 +93,31 @@ def parse_args():
         help="Minimum retained frames per selected scene, matching VGGT CO3D default.",
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--keep_archives", action="store_true", help="Keep downloaded official ZIP chunks.")
+    parser.add_argument(
+        "--archive_first",
+        action="store_true",
+        help="Download a limited number of archives first, then select scenes only from files found there.",
+    )
+    parser.add_argument(
+        "--max_archives_per_category",
+        type=int,
+        default=None,
+        help="Maximum official ZIP archives to download per category. Requires --archive_first.",
+    )
+    parser.add_argument(
+        "--archive_selection",
+        choices=("first", "random"),
+        default="first",
+        help="How to choose category archives in --archive_first mode.",
+    )
+    parser.add_argument(
+        "--keep_archives",
+        nargs="?",
+        const=True,
+        type=parse_bool,
+        default=False,
+        help="Keep downloaded official ZIP chunks. Accepts true/false; default is false.",
+    )
     parser.add_argument(
         "--existing_only",
         action="store_true",
@@ -198,6 +245,16 @@ def required_assets(selected_by_split):
     return required
 
 
+def annotation_required_assets(annotations, categories):
+    required = defaultdict(set)
+    for category in categories:
+        for split in ("train", "test"):
+            for frames in annotations[category][split].values():
+                for frame in frames:
+                    required[category].update(frame_asset_paths(frame))
+    return required
+
+
 def member_to_required_path(member_name, wanted, wanted_by_basename):
     name = normalized_relative_path(member_name)
     if name in wanted:
@@ -228,6 +285,67 @@ def extract_required_from_archive(archive, output_dir, missing):
     return extracted
 
 
+def assets_present_in_archive(archive, wanted):
+    wanted_by_basename = defaultdict(list)
+    for path in wanted:
+        wanted_by_basename[PurePosixPath(path).name].append(path)
+    present = set()
+    with zipfile.ZipFile(archive) as zip_file:
+        for member in zip_file.infolist():
+            if member.is_dir():
+                continue
+            target_relative = member_to_required_path(member.filename, wanted, wanted_by_basename)
+            if target_relative is not None:
+                present.add(target_relative)
+    return present
+
+
+def filter_annotations_to_available_assets(annotations, categories, available_by_category):
+    filtered = {}
+    retained_frames = 0
+    for category in categories:
+        available = available_by_category.get(category, set())
+        filtered[category] = {}
+        for split in ("train", "test"):
+            filtered[category][split] = {}
+            for sequence_name, frames in annotations[category][split].items():
+                present_frames = [
+                    frame
+                    for frame in frames
+                    if all(relative in available for relative in frame_asset_paths(frame))
+                ]
+                if present_frames:
+                    filtered[category][split][sequence_name] = present_frames
+                    retained_frames += len(present_frames)
+    print(f"Found {retained_frames} annotated frames inside selected archives.")
+    return filtered
+
+
+def choose_items(items, count, mode, rng):
+    if count is None or count >= len(items):
+        return list(items)
+    if count <= 0:
+        raise ValueError("Selection count must be positive.")
+    if mode == "random":
+        return rng.sample(list(items), count)
+    return list(items)[:count]
+
+
+def download_selected_archives(categories, links, cache_dir, max_archives_per_category, selection, rng):
+    selected_archives = defaultdict(list)
+    for category in categories:
+        archive_urls = links.get(category, [])
+        if not archive_urls:
+            raise RuntimeError(f"No official archive URLs found for category {category}.")
+        selected_urls = choose_items(archive_urls, max_archives_per_category, selection, rng)
+        print(f"{category}: selected {len(selected_urls)}/{len(archive_urls)} official archives.")
+        for url in selected_urls:
+            archive = cache_dir / Path(url).name
+            download(url, archive)
+            selected_archives[category].append(archive)
+    return selected_archives
+
+
 def write_filtered_annotations(selected_by_split, categories, annotation_dir):
     annotation_dir.mkdir(parents=True, exist_ok=True)
     for category in categories:
@@ -238,12 +356,23 @@ def write_filtered_annotations(selected_by_split, categories, annotation_dir):
                 json.dump(content, stream)
 
 
+def report_selection(selected_train, selected_test, required, categories, train_count, test_count):
+    print(f"Selected {train_count} train images and {test_count} test images ({train_count + test_count} total).")
+    for category in categories:
+        train_scenes = len(selected_train.get(category, {}))
+        test_scenes = len(selected_test.get(category, {}))
+        if train_scenes or test_scenes:
+            print(f"  {category}: {train_scenes} train scenes, {test_scenes} test scenes, {len(required[category]) // 3} images")
+
+
 def main():
     args = parse_args()
     if args.max_images < args.min_frames_per_scene * 2:
         raise ValueError("max_images must fit at least one train and one test scene.")
     if not 0 < args.val_fraction < 1:
         raise ValueError("val_fraction must be between 0 and 1.")
+    if args.max_archives_per_category is not None and not args.archive_first:
+        raise ValueError("--max_archives_per_category requires --archive_first.")
 
     requested_categories = [item.strip() for item in args.categories.split(",") if item.strip()]
     invalid = sorted(set(requested_categories) - set(VGGT_SEEN_CATEGORIES))
@@ -254,15 +383,50 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    rng = random.Random(args.seed)
+    requested_categories = choose_items(
+        requested_categories,
+        args.max_categories,
+        args.category_selection,
+        rng,
+    )
+    print(f"Using {len(requested_categories)} categories: {','.join(requested_categories)}")
+
     annotations = load_or_download_annotations(requested_categories, cache_dir)
     if args.existing_only:
         annotations = filter_annotations_to_existing_assets(annotations, requested_categories, args.output_dir)
+
+    selected_archives = None
+    if args.archive_first and not args.existing_only:
+        links_path = cache_dir / "links.json"
+        download(CO3D_LINKS_URL, links_path)
+        links = json.loads(links_path.read_text(encoding="utf-8"))["full"]
+        selected_archives = download_selected_archives(
+            requested_categories,
+            links,
+            cache_dir,
+            args.max_archives_per_category,
+            args.archive_selection,
+            rng,
+        )
+        all_wanted = annotation_required_assets(annotations, requested_categories)
+        available_by_category = defaultdict(set)
+        for category, archives in selected_archives.items():
+            for archive in archives:
+                present = assets_present_in_archive(archive, all_wanted[category])
+                available_by_category[category].update(present)
+                print(f"  {category}/{archive.name}: {len(present) // 3} annotated frames found")
+        annotations = filter_annotations_to_available_assets(
+            annotations,
+            requested_categories,
+            available_by_category,
+        )
+
     test_budget = int(round(args.max_images * args.val_fraction))
     train_budget = args.max_images - test_budget
     if test_budget < args.min_frames_per_scene:
         raise ValueError("Validation budget is smaller than min_frames_per_scene.")
 
-    rng = random.Random(args.seed)
     selected_train, train_count = select_split(
         annotations, requested_categories, "train", train_budget,
         args.max_frames_per_scene, args.min_frames_per_scene, rng,
@@ -276,18 +440,41 @@ def main():
 
     selected_by_split = {"train": selected_train, "test": selected_test}
     required = required_assets(selected_by_split)
-    print(f"Selected {train_count} train images and {test_count} test images ({train_count + test_count} total).")
-    for category in requested_categories:
-        train_scenes = len(selected_train.get(category, {}))
-        test_scenes = len(selected_test.get(category, {}))
-        if train_scenes or test_scenes:
-            print(f"  {category}: {train_scenes} train scenes, {test_scenes} test scenes, {len(required[category]) // 3} images")
+    report_selection(selected_train, selected_test, required, requested_categories, train_count, test_count)
     if args.dry_run:
         return
     if args.existing_only:
         write_filtered_annotations(selected_by_split, requested_categories, args.annotation_dir)
         print(f"Filtered VGGT annotations written to: {args.annotation_dir}")
         print("No CO3D ZIP archives were downloaded because --existing_only was enabled.")
+        return
+
+    if selected_archives is not None:
+        for category, paths in required.items():
+            missing = {path for path in paths if not (args.output_dir / path).exists()}
+            if not missing:
+                continue
+            print(f"Extracting selected data for {category}; {len(missing)} files required.")
+            for archive in selected_archives.get(category, []):
+                if not missing:
+                    break
+                extracted = extract_required_from_archive(archive, args.output_dir, missing)
+                missing.difference_update(extracted)
+                print(f"  {archive.name}: extracted {len(extracted)} selected files, {len(missing)} remain")
+            if missing:
+                examples = sorted(missing)[:5]
+                raise RuntimeError(
+                    f"Selected archives for {category} did not contain {len(missing)} required files. "
+                    f"Examples: {examples}."
+                )
+        if not args.keep_archives:
+            for archives in selected_archives.values():
+                for archive in archives:
+                    archive.unlink(missing_ok=True)
+        write_filtered_annotations(selected_by_split, requested_categories, args.annotation_dir)
+        print(f"CO3D subset written to: {args.output_dir}")
+        print(f"Filtered VGGT annotations written to: {args.annotation_dir}")
+        print("Use these paths as CO3D_DIR and CO3D_ANNOTATION_DIR in the training config.")
         return
 
     links_path = cache_dir / "links.json"
