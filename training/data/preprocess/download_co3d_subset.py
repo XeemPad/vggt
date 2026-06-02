@@ -388,6 +388,126 @@ def report_selection(selected_train, selected_test, required, categories, train_
             print(f"  {category}: {train_scenes} train scenes, {test_scenes} test scenes, {len(required[category]) // 3} images")
 
 
+def merge_selected(target, source):
+    for category, sequences in source.items():
+        target[category].update(sequences)
+
+
+def extract_selected_from_archives(category, archives, required, output_dir):
+    missing = {path for path in required.get(category, set()) if not (output_dir / path).exists()}
+    if not missing:
+        return
+    print(f"Extracting selected data for {category}; {len(missing)} files required.")
+    for archive in archives:
+        if not missing:
+            break
+        extracted = extract_required_from_archive(archive, output_dir, missing)
+        missing.difference_update(extracted)
+        print(f"  {archive.name}: extracted {len(extracted)} selected files, {len(missing)} remain")
+    if missing:
+        examples = sorted(missing)[:5]
+        raise RuntimeError(
+            f"Selected archives for {category} did not contain {len(missing)} required files. "
+            f"Examples: {examples}."
+        )
+
+
+def run_archive_first(args, categories, annotations, cache_dir, train_budget, test_budget, rng):
+    links_path = cache_dir / "links.json"
+    download(CO3D_LINKS_URL, links_path)
+    links = json.loads(links_path.read_text(encoding="utf-8"))["full"]
+
+    selected_train = defaultdict(dict)
+    selected_test = defaultdict(dict)
+    train_count = 0
+    test_count = 0
+
+    for category_index, category in enumerate(categories):
+        categories_left = len(categories) - category_index
+        train_remaining = train_budget - train_count
+        test_remaining = test_budget - test_count
+        if train_remaining <= 0 and test_remaining <= 0:
+            break
+
+        category_train_budget = max(args.min_frames_per_scene, train_remaining // categories_left) if train_remaining > 0 else 0
+        category_test_budget = max(args.min_frames_per_scene, test_remaining // categories_left) if test_remaining > 0 else 0
+
+        all_wanted = annotation_required_assets(annotations, [category])
+        selected_archives = download_selected_archives(
+            [category],
+            links,
+            cache_dir,
+            args.max_archives_per_category,
+            args.archive_selection,
+            rng,
+            all_wanted,
+            args.keep_archives,
+        )
+        archives = selected_archives[category]
+        try:
+            available_by_category = defaultdict(set)
+            for archive in archives:
+                present = assets_present_in_archive(archive, all_wanted[category])
+                available_by_category[category].update(present)
+            category_annotations = filter_annotations_to_available_assets(
+                annotations,
+                [category],
+                available_by_category,
+            )
+            category_selected_train, category_train_count = select_split(
+                category_annotations,
+                [category],
+                "train",
+                category_train_budget,
+                args.max_frames_per_scene,
+                args.min_frames_per_scene,
+                rng,
+            )
+            category_selected_test, category_test_count = select_split(
+                category_annotations,
+                [category],
+                "test",
+                category_test_budget,
+                args.max_frames_per_scene,
+                args.min_frames_per_scene,
+                rng,
+            )
+            if category_train_count == 0 or category_test_count == 0:
+                print(
+                    f"  {category}: skipped after archive scan; "
+                    f"train_count={category_train_count}, test_count={category_test_count}"
+                )
+                continue
+
+            category_selected_by_split = {
+                "train": category_selected_train,
+                "test": category_selected_test,
+            }
+            category_required = required_assets(category_selected_by_split)
+            if not args.dry_run:
+                extract_selected_from_archives(category, archives, category_required, args.output_dir)
+            merge_selected(selected_train, category_selected_train)
+            merge_selected(selected_test, category_selected_test)
+            train_count += category_train_count
+            test_count += category_test_count
+        finally:
+            if not args.keep_archives:
+                for archive in archives:
+                    archive.unlink(missing_ok=True)
+
+    if train_count == 0 or test_count == 0:
+        raise RuntimeError("Could not select both train and test sequences with the requested archive limits.")
+
+    selected_by_split = {"train": selected_train, "test": selected_test}
+    required = required_assets(selected_by_split)
+    report_selection(selected_train, selected_test, required, categories, train_count, test_count)
+    if not args.dry_run:
+        write_filtered_annotations(selected_by_split, categories, args.annotation_dir)
+        print(f"CO3D subset written to: {args.output_dir}")
+        print(f"Filtered VGGT annotations written to: {args.annotation_dir}")
+        print("Use these paths as CO3D_DIR and CO3D_ANNOTATION_DIR in the training config.")
+
+
 def main():
     args = parse_args()
     if args.max_images < args.min_frames_per_scene * 2:
@@ -419,37 +539,22 @@ def main():
     if args.existing_only:
         annotations = filter_annotations_to_existing_assets(annotations, requested_categories, args.output_dir)
 
-    selected_archives = None
-    if args.archive_first and not args.existing_only:
-        links_path = cache_dir / "links.json"
-        download(CO3D_LINKS_URL, links_path)
-        links = json.loads(links_path.read_text(encoding="utf-8"))["full"]
-        all_wanted = annotation_required_assets(annotations, requested_categories)
-        selected_archives = download_selected_archives(
-            requested_categories,
-            links,
-            cache_dir,
-            args.max_archives_per_category,
-            args.archive_selection,
-            rng,
-            all_wanted,
-            args.keep_archives,
-        )
-        available_by_category = defaultdict(set)
-        for category, archives in selected_archives.items():
-            for archive in archives:
-                present = assets_present_in_archive(archive, all_wanted[category])
-                available_by_category[category].update(present)
-        annotations = filter_annotations_to_available_assets(
-            annotations,
-            requested_categories,
-            available_by_category,
-        )
-
     test_budget = int(round(args.max_images * args.val_fraction))
     train_budget = args.max_images - test_budget
     if test_budget < args.min_frames_per_scene:
         raise ValueError("Validation budget is smaller than min_frames_per_scene.")
+
+    if args.archive_first and not args.existing_only:
+        run_archive_first(
+            args,
+            requested_categories,
+            annotations,
+            cache_dir,
+            train_budget,
+            test_budget,
+            rng,
+        )
+        return
 
     selected_train, train_count = select_split(
         annotations, requested_categories, "train", train_budget,
@@ -471,34 +576,6 @@ def main():
         write_filtered_annotations(selected_by_split, requested_categories, args.annotation_dir)
         print(f"Filtered VGGT annotations written to: {args.annotation_dir}")
         print("No CO3D ZIP archives were downloaded because --existing_only was enabled.")
-        return
-
-    if selected_archives is not None:
-        for category, paths in required.items():
-            missing = {path for path in paths if not (args.output_dir / path).exists()}
-            if not missing:
-                continue
-            print(f"Extracting selected data for {category}; {len(missing)} files required.")
-            for archive in selected_archives.get(category, []):
-                if not missing:
-                    break
-                extracted = extract_required_from_archive(archive, args.output_dir, missing)
-                missing.difference_update(extracted)
-                print(f"  {archive.name}: extracted {len(extracted)} selected files, {len(missing)} remain")
-            if missing:
-                examples = sorted(missing)[:5]
-                raise RuntimeError(
-                    f"Selected archives for {category} did not contain {len(missing)} required files. "
-                    f"Examples: {examples}."
-                )
-        if not args.keep_archives:
-            for archives in selected_archives.values():
-                for archive in archives:
-                    archive.unlink(missing_ok=True)
-        write_filtered_annotations(selected_by_split, requested_categories, args.annotation_dir)
-        print(f"CO3D subset written to: {args.output_dir}")
-        print(f"Filtered VGGT annotations written to: {args.annotation_dir}")
-        print("Use these paths as CO3D_DIR and CO3D_ANNOTATION_DIR in the training config.")
         return
 
     links_path = cache_dir / "links.json"
