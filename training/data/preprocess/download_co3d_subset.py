@@ -331,18 +331,41 @@ def choose_items(items, count, mode, rng):
     return list(items)[:count]
 
 
-def download_selected_archives(categories, links, cache_dir, max_archives_per_category, selection, rng):
+def download_selected_archives(
+    categories,
+    links,
+    cache_dir,
+    max_archives_per_category,
+    selection,
+    rng,
+    wanted_by_category,
+    keep_archives,
+):
     selected_archives = defaultdict(list)
     for category in categories:
         archive_urls = links.get(category, [])
         if not archive_urls:
             raise RuntimeError(f"No official archive URLs found for category {category}.")
-        selected_urls = choose_items(archive_urls, max_archives_per_category, selection, rng)
-        print(f"{category}: selected {len(selected_urls)}/{len(archive_urls)} official archives.")
-        for url in selected_urls:
+        candidate_urls = list(archive_urls)
+        if selection == "random":
+            rng.shuffle(candidate_urls)
+        target_count = max_archives_per_category or len(candidate_urls)
+        print(f"{category}: selecting up to {target_count}/{len(archive_urls)} official archives with annotated assets.")
+        for url in candidate_urls:
+            if len(selected_archives[category]) >= target_count:
+                break
             archive = cache_dir / Path(url).name
             download(url, archive)
-            selected_archives[category].append(archive)
+            present = assets_present_in_archive(archive, wanted_by_category[category])
+            if present:
+                selected_archives[category].append(archive)
+                print(f"  {archive.name}: accepted, {len(present) // 3} annotated frames found")
+            else:
+                print(f"  {archive.name}: skipped, no annotated RGB/depth/mask assets found")
+                if not keep_archives:
+                    archive.unlink(missing_ok=True)
+        if not selected_archives[category]:
+            raise RuntimeError(f"No selected archive for {category} contained annotated assets.")
     return selected_archives
 
 
@@ -401,6 +424,7 @@ def main():
         links_path = cache_dir / "links.json"
         download(CO3D_LINKS_URL, links_path)
         links = json.loads(links_path.read_text(encoding="utf-8"))["full"]
+        all_wanted = annotation_required_assets(annotations, requested_categories)
         selected_archives = download_selected_archives(
             requested_categories,
             links,
@@ -408,14 +432,14 @@ def main():
             args.max_archives_per_category,
             args.archive_selection,
             rng,
+            all_wanted,
+            args.keep_archives,
         )
-        all_wanted = annotation_required_assets(annotations, requested_categories)
         available_by_category = defaultdict(set)
         for category, archives in selected_archives.items():
             for archive in archives:
                 present = assets_present_in_archive(archive, all_wanted[category])
                 available_by_category[category].update(present)
-                print(f"  {category}/{archive.name}: {len(present) // 3} annotated frames found")
         annotations = filter_annotations_to_available_assets(
             annotations,
             requested_categories,
