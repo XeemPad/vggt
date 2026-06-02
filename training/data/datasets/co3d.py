@@ -383,7 +383,7 @@ class Co3dDataset(BaseDataset):
                     padding_mode=self.radial_distortion_aug.get("padding_mode", "border"),
                 )
                 raw_images = [
-                    image.permute(1, 2, 0).numpy().clip(0, 255).astype(np.float32)
+                    np.rint(image.permute(1, 2, 0).numpy()).clip(0, 255).astype(np.uint8)
                     for image in image_tensor
                 ]
                 raw_distortions = [
