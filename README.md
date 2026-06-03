@@ -1,4 +1,8 @@
 <div align="center">
+<h1>RadVGGT: Attempt at adding radial distortion coefficient k1 for VGGT</h1>
+
+(the rest of README is left untouched from the original vggt repo)
+  
 <h1>VGGT: Visual Geometry Grounded Transformer</h1>
 
 <a href="https://jytime.github.io/data/VGGT_CVPR25.pdf" target="_blank" rel="noopener noreferrer">
